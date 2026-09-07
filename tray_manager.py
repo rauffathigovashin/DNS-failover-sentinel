@@ -29,18 +29,18 @@ class TrayManager:
     def create_tray_image(self, status: str = "ok") -> Image.Image:
         """
         Generates a modern high-DPI squircle tray icon with live status indicator badge.
-        Status: 'ok' (Emerald), 'warning' (Amber), 'error' (Crimson), 'stopped' (Slate)
+        Status: 'ok' (Emerald), 'warning' (Amber), 'error' (Crimson), 'stopped' (Slate), 'offline' (Dark Red)
         """
         colors = {
             "ok": "#10b981",       # Emerald Green
             "warning": "#f59e0b",  # Amber Yellow
             "error": "#ef4444",    # Crimson Red
+            "offline": "#b91c1c",  # Dark Crimson
             "stopped": "#64748b",  # Slate Gray
             "default": "#38bdf8"   # Cyber Sky Blue
         }
         accent = colors.get(status, colors["default"])
 
-        # Try loading base square logo from file
         base_img = None
         for filename in ["app_logo.png", "app_icon.ico"]:
             path = filename
@@ -57,15 +57,12 @@ class TrayManager:
                     pass
 
         if base_img:
-            # Draw on high-res 256x256 image then downscale with LANCZOS for super-clean anti-aliasing
             work_img = base_img.resize((256, 256), Image.Resampling.LANCZOS)
             draw = ImageDraw.Draw(work_img)
-            # Status badge in bottom-right corner
             draw.ellipse((160, 160, 248, 248), fill="#0a0f1d", outline="#1e293b", width=8)
             draw.ellipse((172, 172, 236, 236), fill=accent)
             return work_img.resize((64, 64), Image.Resampling.LANCZOS)
         else:
-            # Fallback procedural squircle
             size = (64, 64)
             image = Image.new("RGBA", size, (0, 0, 0, 0))
             draw = ImageDraw.Draw(image)
@@ -74,10 +71,8 @@ class TrayManager:
             draw.ellipse((40, 40, 60, 60), fill=accent, outline="#0a0f1d", width=2)
             return image
 
-    def start(self):
-        """Starts the system tray icon in a dedicated daemon thread."""
-        image = self.create_tray_image("ok")
-        menu = pystray.Menu(
+    def _build_menu(self) -> pystray.Menu:
+        return pystray.Menu(
             pystray.MenuItem("🛡️ DNS Shield Pro (Open)", self._on_show, default=True),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("⚡ Quick Optimize (Fastest DNS)", self._on_quick_fix),
@@ -88,14 +83,23 @@ class TrayManager:
             pystray.MenuItem("❌ Exit DNS Shield Pro", self._on_exit_clicked)
         )
 
-        self.icon = pystray.Icon("DNSShieldPro", image, "DNS Shield Pro - Active Protection", menu)
-        self.thread = threading.Thread(target=self.icon.run, daemon=True)
+    def start(self):
+        """Starts the system tray icon in a dedicated daemon thread."""
+        image = self.create_tray_image("ok")
+        menu = self._build_menu()
+        title = "DNS Shield Pro - Active Protection"
+
+        self.icon = pystray.Icon("DNSShieldPro", image, title, menu)
+        self.thread = threading.Thread(target=self.icon.run, daemon=True, name="TrayIconThread")
         self.thread.start()
 
     def update_status(self, status: str = "ok", tooltip: str = "DNS Shield Pro"):
         if self.icon:
-            self.icon.icon = self.create_tray_image(status)
-            self.icon.title = tooltip
+            try:
+                self.icon.icon = self.create_tray_image(status)
+                self.icon.title = tooltip[:128]
+            except Exception:
+                pass
 
     def notify(self, title: str, message: str):
         if self.icon and hasattr(self.icon, "notify"):
@@ -133,6 +137,8 @@ class TrayManager:
     def stop(self):
         if self.icon:
             try:
+                self.icon.visible = False
                 self.icon.stop()
             except Exception:
                 pass
+            self.icon = None

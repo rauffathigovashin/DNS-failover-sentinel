@@ -1,38 +1,52 @@
-﻿# Python
+# Python byte code and caches
 __pycache__/
 *.py[cod]
+*$py.class
 *.pyo
 *.pyd
 *.pyc
 *.egg
 *.egg-info/
+.pytest_cache/
 
-# PyInstaller output
+# PyInstaller build artifacts
 dist/
 build/
 *.pkg
+*.manifest
 
-# Runtime / user config (contains personal DNS settings)
+# Runtime and crash logs
+*.log
+crash_log.txt
+
+# Local user configs
+config.json.tmp
 config.json
 
-# Compiled executables
+# Compiled Windows binaries
 *.exe
 *.msi
 
-# OS junk
+# Operating System specific files
 .DS_Store
 Thumbs.db
 desktop.ini
+ehthumbs.db
 
-# IDE
+# IDE & Editor artifacts
 .vscode/
 .idea/
 *.code-workspace
+*.sublime-project
+*.sublime-workspace
 
-# Logs
-*.log
+# Virtual Environments
+.venv/
+env/
+venv/
+ENV/
 
-# Temp
+# Temporary / backup files
 *.tmp
 *.bak
 scratch_icons/

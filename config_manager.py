@@ -153,7 +153,7 @@ DEFAULT_DNS_POOL: List[Dict] = [
         "id": "mullvad_adblock",
         "name": "Mullvad Ad-Block DNS",
         "primary": "194.242.2.3",
-        "secondary": "193.19.108.3",
+        "secondary": "193.198.108.3",
         "category": "Ad-Blocking",
         "desc": "Mullvad privacy infrastructure filtering ads and telemetry.",
         "is_custom": False
@@ -164,7 +164,7 @@ DEFAULT_DNS_POOL: List[Dict] = [
         "id": "mullvad_privacy",
         "name": "Mullvad Privacy (No Log)",
         "primary": "194.242.2.2",
-        "secondary": "193.19.108.2",
+        "secondary": "193.198.108.2",
         "category": "Privacy",
         "desc": "Strict zero-logging policy based in Sweden. Uncensored and private.",
         "is_custom": False
@@ -236,9 +236,80 @@ DEFAULT_DNS_POOL: List[Dict] = [
     }
 ]
 
+TRANSLATIONS = {
+    "en": {
+        "app_title": "DNS SHIELD PRO",
+        "app_subtitle": "Automated DNS Failover Sentinel • Multi-Provider Latency Benchmarking • Zero-Downtime Protection",
+        "admin": "🛡️ ADMIN",
+        "elevate_admin": "⚠️ ELEVATE TO ADMIN",
+        "protected": "● PROTECTED",
+        "paused": "● PAUSED",
+        "active_protection": "Active Protection",
+        "net_adapter": "🌐 NETWORK ADAPTER",
+        "active_dns": "🎯 ACTIVE DNS RESOLVER",
+        "live_latency": "⚡ LIVE LATENCY & HEALTH",
+        "sentinel_metrics": "🛡️ SENTINEL METRICS",
+        "auto_detect": "Auto-Detect (Primary)",
+        "tab_live": "📊 Live Monitor & Graphs",
+        "tab_benchmark": "🚀 DNS Benchmark & Server Hub",
+        "tab_manual": "🔧 Adapter & Manual DNS",
+        "tab_settings": "⚙️ Settings & Policies",
+        "opt_fastest": "⚡ Optimize to Fastest DNS",
+        "flush_dns": "🧹 Flush DNS Cache",
+        "reset_dhcp": "🔄 Reset to DHCP",
+        "copy_dns": "📋 Copy DNS Info",
+        "clear_log": "Clear Log",
+        "activity_log": "📋 REAL-TIME SENTINEL ACTIVITY LOG",
+        "filter_all": "All",
+        "filter_success": "Success",
+        "filter_alerts": "Alerts",
+        "filter_failover": "Failover",
+        "filter_errors": "Errors",
+        "search_placeholder": "🔍 Filter by name, IP, or keyword...",
+        "add_custom_dns": "+ Add Custom DNS",
+        "benchmark_all": "🚀 Benchmark All DNS",
+        "benchmarking": "⏳ Benchmarking...",
+        "cat_all": "All Providers",
+        "cat_fast": "🚀 Ultra Fast",
+        "cat_sec": "🛡️ Security",
+        "cat_adblock": "🚫 Ad-Blocking",
+        "cat_priv": "🔒 Privacy",
+        "cat_family": "👨‍👩‍👦 Family Safe",
+        "cat_custom": "⭐ Custom",
+        "apply": "Apply",
+        "test": "Test",
+        "active_badge": "✓ ACTIVE CURRENT",
+        "hardware_specs": "📡 NETWORK ADAPTER SPECIFICATIONS",
+        "manual_dns_title": "✍️ CONFIGURE CUSTOM IPV4 DNS MANUALLY",
+        "pri_dns_label": "Preferred DNS Server (Primary IPv4):",
+        "sec_dns_label": "Alternate DNS Server (Secondary IPv4):",
+        "apply_manual": "Apply Manual DNS",
+        "diag_title": "🔍 INSTANT DOMAIN RESOLUTION TEST",
+        "test_resolution": "Test Resolution",
+        "net_tools_title": "🛠️ ADVANCED NETWORK DIAGNOSTIC & REPAIR",
+        "repair_stack": "🔄 Repair Network Stack (Winsock/ARP)",
+        "renew_ip": "🌐 Renew IP (DHCP Lease)",
+        "switch_failover": "Enable Automatic Failover\nAutomatically switch to the fastest verified DNS when current server fails",
+        "check_interval": "Health Check Interval\nFrequency of background DNS uptime probing (Seconds)",
+        "fail_threshold": "Failover Threshold\nConsecutive unanswered queries before emergency failover is triggered",
+        "win_autostart": "Launch with Windows\nStart DNS Shield Pro silently in the background at system startup",
+        "min_tray": "Minimize to System Tray\nClosing the window sends the application to the notification area",
+        "desktop_notify": "Desktop Notifications\nDisplay Windows notifications when automatic failover occurs",
+        "test_domains": "Target Test Domains (Comma separated):",
+        "save_domains": "Save Test Domains",
+        "toast_flush": "✓ Windows DNS cache flushed instantly (0.1 ms)",
+        "toast_dhcp": "✓ Network adapter reset to DHCP / ISP default",
+        "toast_applied": "✓ DNS applied successfully:",
+        "toast_repair": "✓ Network stack and ARP table purged successfully",
+        "untested": "Untested",
+        "latency_trend": "📈 LIVE LATENCY TREND (LAST 30 CHECKS)"
+    }
+}
+
 DEFAULT_CONFIG = {
     "app_name": "DNS Shield Pro",
-    "version": "2.0",
+    "version": "2.5",
+    "language": "en",
     "check_interval_seconds": 6,
     "fail_threshold": 2,
     "query_timeout_seconds": 1.5,
@@ -267,15 +338,19 @@ class ConfigManager:
                 merged = DEFAULT_CONFIG.copy()
                 for k, v in data.items():
                     if k == "dns_pool":
-                        # Preserve custom DNS added by user while updating standard pool
                         custom_entries = [item for item in v if item.get("is_custom", False)]
-                        merged["dns_pool"] = DEFAULT_DNS_POOL + custom_entries
+                        existing_ids = {item["id"] for item in DEFAULT_DNS_POOL}
+                        for custom in custom_entries:
+                            if custom.get("id") not in existing_ids:
+                                DEFAULT_DNS_POOL.append(custom)
+                        merged["dns_pool"] = DEFAULT_DNS_POOL
                     else:
                         merged[k] = v
 
+                merged["language"] = "en"
                 return merged
             except Exception as e:
-                print(f"[Config] Error reading configuration file, reverting to defaults: {e}")
+                print(f"[Config] Error reading configuration file: {e}")
 
         config = DEFAULT_CONFIG.copy()
         self.save_config(config)
@@ -285,8 +360,11 @@ class ConfigManager:
         if cfg is None:
             cfg = self.config
         try:
-            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            temp_file = CONFIG_FILE + ".tmp"
+            with open(temp_file, "w", encoding="utf-8") as f:
                 json.dump(cfg, f, indent=4, ensure_ascii=False)
+            if os.path.exists(temp_file):
+                os.replace(temp_file, CONFIG_FILE)
             return True
         except Exception as e:
             print(f"[Config] Error saving configuration file: {e}")
@@ -298,6 +376,11 @@ class ConfigManager:
     def set(self, key: str, value):
         self.config[key] = value
         self.save_config()
+
+    def tr(self, key: str) -> str:
+        """Retrieves English UI string."""
+        translations = TRANSLATIONS.get("en", {})
+        return translations.get(key, key)
 
     def add_custom_dns(self, name: str, primary: str, secondary: str = "", category: str = "Custom", desc: str = "") -> bool:
         """Adds a custom DNS server to the pool and persists it."""
@@ -320,7 +403,6 @@ class ConfigManager:
         }
 
         pool = self.config.get("dns_pool", [])
-        # Check if already exists
         for item in pool:
             if item.get("primary") == primary and item.get("secondary") == secondary:
                 item["name"] = name
@@ -355,15 +437,20 @@ class ConfigManager:
 
     @staticmethod
     def set_auto_start(enabled: bool) -> bool:
+        """Sets or deletes Windows auto-start Run key in registry."""
         try:
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_REG_PATH, 0, winreg.KEY_SET_VALUE) as key:
                 if enabled:
-                    script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "main.py")
-                    python_exe = sys.executable
-                    # Use pythonw if available for silent startup
-                    pythonw_exe = os.path.join(os.path.dirname(python_exe), "pythonw.exe")
-                    exe_to_use = pythonw_exe if os.path.exists(pythonw_exe) else python_exe
-                    cmd = f'"{exe_to_use}" "{script_path}" --minimized'
+                    if getattr(sys, "frozen", False):
+                        exe_path = sys.executable
+                        cmd = f'"{exe_path}" --minimized'
+                    else:
+                        script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "main.py")
+                        python_exe = sys.executable
+                        pythonw_exe = os.path.join(os.path.dirname(python_exe), "pythonw.exe")
+                        exe_to_use = pythonw_exe if os.path.exists(pythonw_exe) else python_exe
+                        cmd = f'"{exe_to_use}" "{script_path}" --minimized'
+
                     winreg.SetValueEx(key, APP_REG_NAME, 0, winreg.REG_SZ, cmd)
                 else:
                     try:
