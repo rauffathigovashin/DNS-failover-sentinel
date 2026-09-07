@@ -1,0 +1,39 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+*.egg
+*.egg-info/
+
+# PyInstaller output
+dist/
+build/
+*.pkg
+
+# Runtime / user config (contains personal DNS settings)
+config.json
+
+# Compiled executables
+*.exe
+*.msi
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# Logs
+*.log
+
+# Temp
+*.tmp
+*.bak
+scratch_icons/
+scratch_*.png
