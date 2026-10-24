@@ -1,9 +1,8 @@
 @echo off
-chcp 65001 > nul
-title DNS Shield Pro / DNS Kalkanı Pro - Executable Builder
+title DNS Shield Pro - Executable Builder
 cd /d "%~dp0"
 echo ========================================================
-echo   🔨 BUILDING STANDALONE EXECUTABLE (v2.5)
+echo   BUILDING STANDALONE EXECUTABLE (v3.0)
 echo ========================================================
 
 :: Close running instances if possible
@@ -13,16 +12,19 @@ timeout /t 1 /nobreak >nul
 
 python -m PyInstaller --clean DNS_Shield_Pro.spec
 
-if %errorLevel% == 0 (
+if errorlevel 1 (
     echo.
     echo ========================================================
-    echo   ✅ BUILD SUCCESSFUL!
-    echo   Output executable located at: dist\DNS_Shield_Pro.exe
+    echo   [ERROR] Build failed!
+    echo   Note: If dist\DNS_Shield_Pro.exe is locked, please exit
+    echo   it from your Windows system tray and try again!
     echo ========================================================
 ) else (
     echo.
-    echo ⚠️ Note: If dist\DNS_Shield_Pro.exe is currently locked by a running instance,
-    echo    please exit it from your system tray and try again, or use DNS_Kalkani_Pro.exe!
+    echo ========================================================
+    echo   [SUCCESS] BUILD COMPLETED!
+    echo   Output executable located at: dist\DNS_Shield_Pro.exe
+    echo ========================================================
 )
 
 pause

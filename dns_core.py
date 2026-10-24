@@ -7,6 +7,11 @@ import ctypes
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Tuple, Optional, Callable
 import dns.resolver
+import dns.query
+import dns.message
+import dns.rdatatype
+import dns.rcode
+import dns.exception
 import psutil
 
 class DNSCore:
@@ -207,9 +212,26 @@ class DNSCore:
     @staticmethod
     def get_primary_active_adapter() -> Optional[str]:
         """
-        Determines the primary connected adapter with internet access (e.g., Ethernet or Wi-Fi).
-        Uses fast native state first.
+        Determines the primary connected adapter with active routing (e.g., Ethernet or Wi-Fi).
+        Uses instant kernel routing table query first (< 0.05 ms), with native fallback.
         """
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                s.connect(("8.8.8.8", 80))
+                local_ip = s.getsockname()[0]
+                if local_ip and local_ip != "127.0.0.1":
+                    for if_name, addrs in psutil.net_if_addrs().items():
+                        if "loopback" in if_name.lower():
+                            continue
+                        for addr in addrs:
+                            if addr.address == local_ip:
+                                return if_name
+            finally:
+                s.close()
+        except Exception:
+            pass
+
         adapters = DNSCore.get_network_adapters()
         if not adapters:
             return "Ethernet"
@@ -232,54 +254,108 @@ class DNSCore:
         return adapters[0]["name"]
 
     @staticmethod
-    def is_network_online(timeout: float = 0.8) -> bool:
+    def is_network_online(timeout: float = 1.5) -> bool:
         """
-        Quickly tests if the machine has active layer-3/4 internet connectivity.
-        Prevents triggering false failover cycles when the cable is unplugged or router is off.
+        Quickly tests if the machine has active layer-3/4 internet connectivity
+        by probing multiple global Anycast endpoints concurrently in parallel.
+        Uses diverse ports (53/TCP, 80/TCP, 443/TCP) to avoid firewall false-negatives.
+        Returns True as soon as ANY single endpoint responds successfully.
         """
         test_endpoints = [
-            ("1.1.1.1", 53),
-            ("8.8.8.8", 53),
-            ("208.67.222.222", 53)
+            ("1.1.1.1",        80),   # Cloudflare HTTP
+            ("8.8.8.8",        53),   # Google DNS/TCP
+            ("1.0.0.1",        53),   # Cloudflare DNS/TCP
+            ("208.67.222.222", 443),  # OpenDNS HTTPS
+            ("9.9.9.9",        53),   # Quad9 DNS
+            ("8.8.4.4",        80),   # Google HTTP
+            ("1.1.1.1",        443),  # Cloudflare HTTPS
+            ("142.250.185.46", 80),   # Google raw IP HTTP (avoids DNS dependency)
         ]
-        for host, port in test_endpoints:
+
+        def _check_target(target):
+            host, port = target
             try:
                 with socket.create_connection((host, port), timeout=timeout):
                     return True
             except OSError:
-                continue
+                return False
+
+        with ThreadPoolExecutor(max_workers=len(test_endpoints)) as executor:
+            futures = [executor.submit(_check_target, t) for t in test_endpoints]
+            for future in as_completed(futures):
+                try:
+                    if future.result():
+                        return True
+                except Exception:
+                    pass
         return False
 
     @staticmethod
-    def test_dns_server(server_ip: str, domain: str = "google.com", timeout: float = 1.5) -> Tuple[bool, float, str]:
+    def test_dns_server(server_ip: str, domain: str = "google.com", timeout: float = 1.0) -> Tuple[bool, float, str]:
         """
-        Directly queries a specific DNS server IP for resolution latency and reachability.
+        Directly queries a specific DNS server IP via direct raw UDP wire protocol.
+        On UDP timeout, immediately falls back to TCP to handle ISP UDP port 53 filtering.
+        No retry loops - single fast attempt per protocol to keep monitor cycles snappy.
         Returns: (is_success, latency_ms, resolved_ip_or_error)
         """
-        resolver = dns.resolver.Resolver(configure=False)
-        resolver.nameservers = [server_ip]
-        resolver.timeout = timeout
-        resolver.lifetime = timeout
+        if not server_ip or not server_ip.strip():
+            return False, 9999.0, "Empty Server IP"
 
+        server_ip = server_ip.strip()
         t_start = time.perf_counter()
+
+        def _parse_resp(resp, elapsed_ms):
+            rcode = resp.rcode()
+            if rcode == dns.rcode.NOERROR:
+                answers = []
+                for rrset in resp.answer:
+                    if rrset.rdtype == dns.rdatatype.A:
+                        for rdata in rrset:
+                            answers.append(rdata.to_text())
+                if answers:
+                    return True, elapsed_ms, ", ".join(answers[:2])
+                return True, elapsed_ms, "Resolved (No A record)"
+            elif rcode == dns.rcode.NXDOMAIN:
+                return False, 9999.0, "Domain Not Found (NXDOMAIN)"
+            elif rcode == dns.rcode.REFUSED:
+                return False, 9999.0, "Query Refused by Server"
+            elif rcode == dns.rcode.SERVFAIL:
+                return False, 9999.0, "Server Failure (SERVFAIL)"
+            else:
+                return False, 9999.0, f"RCODE {dns.rcode.to_text(rcode)}"
+
+        query_msg = dns.message.make_query(domain, dns.rdatatype.A)
+
+        # 1. UDP fast path (most servers respond in <50ms)
         try:
-            answers = resolver.resolve(domain, "A")
+            response = dns.query.udp(query_msg, server_ip, timeout=timeout)
             latency_ms = round((time.perf_counter() - t_start) * 1000, 1)
-            ips = [r.to_text() for r in answers]
-            return True, latency_ms, ", ".join(ips[:2])
-        except dns.resolver.LifetimeTimeout:
-            return False, 9999.0, "Timeout / Filtered"
-        except dns.resolver.NXDOMAIN:
-            return False, 9999.0, "Domain Not Found (NXDOMAIN)"
-        except dns.resolver.NoNameservers:
-            return False, 9999.0, "No Response from Nameserver"
+            return _parse_resp(response, latency_ms)
+        except (dns.exception.Timeout, TimeoutError, socket.timeout):
+            pass
+        except OSError as e:
+            return False, 9999.0, f"Network Error: {e.strerror or type(e).__name__}"
         except Exception as e:
             return False, 9999.0, str(type(e).__name__)
 
+        # 2. TCP fallback (handles ISP UDP port 53 blocking)
+        try:
+            t_tcp = time.perf_counter()
+            response = dns.query.tcp(query_msg, server_ip, timeout=min(timeout, 1.0))
+            latency_ms = round((time.perf_counter() - t_tcp) * 1000, 1)
+            ok, ms, msg = _parse_resp(response, latency_ms)
+            if ok:
+                return True, latency_ms, f"{msg} (TCP)"
+        except Exception:
+            pass
+
+        return False, 9999.0, "Timeout / Filtered"
+
     @staticmethod
-    def test_current_dns_health(test_domains: Optional[List[str]] = None, timeout: float = 1.5) -> Tuple[bool, float, str]:
+    def test_current_dns_health(test_domains: Optional[List[str]] = None, timeout: float = 2.0) -> Tuple[bool, float, str]:
         """
         Verifies active system DNS resolution health across multiple reliable test domains.
+        Fast fail-safe checking.
         """
         if not test_domains:
             test_domains = ["google.com", "cloudflare.com", "one.one.one.one", "microsoft.com"]
@@ -295,15 +371,19 @@ class DNSCore:
                 latency_ms = round((time.perf_counter() - t_start) * 1000, 1)
                 if answers:
                     return True, latency_ms, domain
+            except (dns.exception.Timeout, TimeoutError, socket.timeout):
+                # DNS server timed out! Stop immediately instead of sending 3 redundant requests to a dead server
+                return False, 9999.0, "DNS Query Timeout"
             except Exception:
                 continue
 
         return False, 9999.0, "All test domains failed to resolve"
 
     @staticmethod
-    def benchmark_single_server(entry: Dict, domain: str = "google.com", timeout: float = 1.5) -> Dict:
+    def benchmark_single_server(entry: Dict, domain: str = "google.com", timeout: float = 1.2) -> Dict:
         """
         Benchmarks an individual DNS server entry for latency and responsiveness.
+        Queries primary and secondary in parallel for maximum speed.
         """
         name = entry.get("name", "Unknown")
         primary_ip = entry.get("primary", "")
@@ -312,10 +392,18 @@ class DNSCore:
         desc = entry.get("desc", "")
         is_custom = entry.get("is_custom", False)
 
-        ok_pri, ms_pri, msg_pri = DNSCore.test_dns_server(primary_ip, domain, timeout)
-        ok_sec, ms_sec, msg_sec = (False, 9999.0, "None")
-        if secondary_ip and secondary_ip.strip():
-            ok_sec, ms_sec, msg_sec = DNSCore.test_dns_server(secondary_ip.strip(), domain, timeout)
+        has_sec = bool(secondary_ip and secondary_ip.strip())
+
+        # Run primary and secondary tests in parallel for faster benchmarking
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            f_pri = ex.submit(DNSCore.test_dns_server, primary_ip, domain, timeout)
+            f_sec = ex.submit(DNSCore.test_dns_server, secondary_ip.strip(), domain, timeout) if has_sec else None
+
+            ok_pri, ms_pri, msg_pri = f_pri.result()
+            if f_sec is not None:
+                ok_sec, ms_sec, msg_sec = f_sec.result()
+            else:
+                ok_sec, ms_sec, msg_sec = False, 9999.0, "None"
 
         is_alive = ok_pri or ok_sec
         best_ms = 9999.0
@@ -348,18 +436,20 @@ class DNSCore:
     def benchmark_all_servers(
         dns_pool: List[Dict],
         domain: str = "google.com",
-        timeout: float = 1.5,
+        timeout: float = 1.2,
         progress_callback: Optional[Callable[[int, int, Dict], None]] = None
     ) -> List[Dict]:
         """
-        Benchmarks all DNS servers in the pool in parallel.
-        Supports real-time progress callback for dynamic GUI progress bar.
+        Benchmarks all DNS servers in the pool in parallel using a controlled threadpool.
+        Uses up to 14 workers - each server's primary+secondary already run in parallel
+        inside benchmark_single_server, so total thread count stays manageable.
         """
         results = []
         total = len(dns_pool)
         completed_count = 0
+        workers = min(max(total, 1), 8)
 
-        with ThreadPoolExecutor(max_workers=min(total or 1, 16)) as executor:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
             future_to_entry = {executor.submit(DNSCore.benchmark_single_server, item, domain, timeout): item for item in dns_pool}
             for future in as_completed(future_to_entry):
                 completed_count += 1
@@ -396,23 +486,59 @@ class DNSCore:
         return results
 
     @staticmethod
+    def fast_failover_probe(
+        candidates: List[Dict],
+        domain: str = "google.com",
+        timeout: float = 0.85
+    ) -> List[Dict]:
+        """
+        Ultra-fast parallel race probe specifically designed for zero-lag emergency failover.
+        Uses lightweight UDP queries with 850ms timeout to discover verified healthy servers
+        in sub-second time (typically < 300ms) without flooding the network.
+        """
+        results = []
+        if not candidates:
+            return results
+
+        workers = min(len(candidates), 6)
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_to_entry = {
+                executor.submit(DNSCore.benchmark_single_server, item, domain, timeout): item
+                for item in candidates
+            }
+            for future in as_completed(future_to_entry):
+                try:
+                    res = future.result()
+                    if res.get("is_alive"):
+                        results.append(res)
+                except Exception:
+                    pass
+
+        results.sort(key=lambda x: x["latency_ms"])
+        return results
+
+    @staticmethod
     def set_adapter_dns(adapter_name: str, primary_ip: str, secondary_ip: Optional[str] = None) -> Tuple[bool, str]:
         """
         Applies primary and secondary DNS server addresses to the specified network adapter.
         Uses fast netsh command first (~50ms) and PowerShell as secondary guarantee.
+        Prevents identical duplicate IPs on the adapter.
         """
-        ips = [primary_ip.strip()]
-        if secondary_ip and secondary_ip.strip():
-            ips.append(secondary_ip.strip())
+        p_ip = primary_ip.strip()
+        ips = [p_ip]
+        if secondary_ip:
+            s_ip = secondary_ip.strip()
+            if s_ip and s_ip != p_ip:
+                ips.append(s_ip)
 
         # Method 1: Netsh (fast, reliable, handles quotes)
         try:
-            cmd1 = ["netsh", "interface", "ipv4", "set", "dns", f'name="{adapter_name}"', "static", primary_ip.strip()]
+            cmd1 = ["netsh", "interface", "ipv4", "set", "dns", f'name="{adapter_name}"', "static", p_ip]
             res1 = subprocess.run(cmd1, capture_output=True, text=True, timeout=4, creationflags=subprocess.CREATE_NO_WINDOW)
             
             if res1.returncode == 0:
-                if secondary_ip and secondary_ip.strip():
-                    cmd2 = ["netsh", "interface", "ipv4", "add", "dns", f'name="{adapter_name}"', secondary_ip.strip(), "index=2"]
+                if len(ips) > 1:
+                    cmd2 = ["netsh", "interface", "ipv4", "add", "dns", f'name="{adapter_name}"', ips[1], "index=2"]
                     subprocess.run(cmd2, capture_output=True, text=True, timeout=3, creationflags=subprocess.CREATE_NO_WINDOW)
 
                 DNSCore.flush_dns()

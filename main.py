@@ -61,12 +61,13 @@ def handle_exception(exc_type, exc_value, exc_traceback):
         sys.__excepthook__(exc_type, exc_value, exc_traceback)
         return
 
+    import datetime
     err_text = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
     print(f"[CRITICAL UNHANDLED EXCEPTION]\n{err_text}", file=sys.stderr)
     try:
         log_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "crash_log.txt")
         with open(log_file, "a", encoding="utf-8") as f:
-            f.write(f"\n--- Crash Log: {ctk.datetime.datetime.now()} ---\n{err_text}\n")
+            f.write(f"\n--- Crash Log: {datetime.datetime.now()} ---\n{err_text}\n")
     except Exception:
         pass
 
@@ -79,6 +80,14 @@ def main():
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
     except Exception:
         pass
+
+    # Ensure Administrator privileges for seamless network adapter configuration
+    if not is_admin():
+        try:
+            if run_as_admin():
+                sys.exit(0)
+        except Exception:
+            pass
 
     from config_manager import ConfigManager
     from dns_monitor import DNSMonitor

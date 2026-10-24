@@ -25,17 +25,23 @@ class TrayManager:
         self.icon: Optional[pystray.Icon] = None
         self.thread: Optional[threading.Thread] = None
         self.is_paused = False
+        self._icon_cache: dict = {}
 
     def create_tray_image(self, status: str = "ok") -> Image.Image:
         """
         Generates a modern high-DPI squircle tray icon with live status indicator badge.
-        Status: 'ok' (Emerald), 'warning' (Amber), 'error' (Crimson), 'stopped' (Slate), 'offline' (Dark Red)
+        Caches result per status for optimal performance.
+        Status: 'ok' (Emerald), 'warning' (Amber), 'error' (Crimson), 'stopped' (Slate), 'offline' (Amber/Red), 'switching' (Cyan)
         """
+        if status in self._icon_cache:
+            return self._icon_cache[status]
+
         colors = {
             "ok": "#10b981",       # Emerald Green
             "warning": "#f59e0b",  # Amber Yellow
             "error": "#ef4444",    # Crimson Red
-            "offline": "#b91c1c",  # Dark Crimson
+            "offline": "#ea580c",  # Deep Orange (Link down)
+            "switching": "#06b6d4",# Cyan / Blue (Switching)
             "stopped": "#64748b",  # Slate Gray
             "default": "#38bdf8"   # Cyber Sky Blue
         }
@@ -61,7 +67,9 @@ class TrayManager:
             draw = ImageDraw.Draw(work_img)
             draw.ellipse((160, 160, 248, 248), fill="#0a0f1d", outline="#1e293b", width=8)
             draw.ellipse((172, 172, 236, 236), fill=accent)
-            return work_img.resize((64, 64), Image.Resampling.LANCZOS)
+            res = work_img.resize((64, 64), Image.Resampling.LANCZOS)
+            self._icon_cache[status] = res
+            return res
         else:
             size = (64, 64)
             image = Image.new("RGBA", size, (0, 0, 0, 0))
@@ -69,6 +77,7 @@ class TrayManager:
             draw.rounded_rectangle((4, 4, 60, 60), radius=14, fill="#0284c7")
             draw.rounded_rectangle((18, 18, 46, 46), radius=8, fill="#ffffff")
             draw.ellipse((40, 40, 60, 60), fill=accent, outline="#0a0f1d", width=2)
+            self._icon_cache[status] = image
             return image
 
     def _build_menu(self) -> pystray.Menu:

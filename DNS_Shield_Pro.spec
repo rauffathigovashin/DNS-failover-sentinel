@@ -1,9 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('app_icon.ico', '.'), ('app_logo.png', '.')]
+datas = [('app_icon.ico', '.'), ('app_logo.png', '.'), ('config.json', '.')]
 binaries = []
-hiddenimports = ['dns', 'dns.resolver', 'pystray', 'PIL', 'psutil', 'customtkinter']
+hiddenimports = [
+    'dns', 'dns.resolver', 'dns.query', 'dns.message', 'dns.rdatatype',
+    'dns.rcode', 'dns.exception', 'dns.name', 'dns.rrset', 'dns.flags',
+    'pystray', 'PIL', 'psutil', 'customtkinter'
+]
 tmp_ret = collect_all('customtkinter')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
@@ -42,4 +46,5 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=['app_icon.ico'],
+    uac_admin=True,
 )

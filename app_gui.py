@@ -177,7 +177,7 @@ class DNSGuardianApp:
         self.run_as_admin_func = run_as_admin_func
 
         # App Configuration
-        self.root.title("DNS Shield Pro v2.5 - Automated DNS Sentinel & Latency Optimizer")
+        self.root.title("DNS Shield Pro v3.0 - Automated DNS Sentinel & Latency Optimizer")
         self.root.geometry("1080x810")
         self.root.minsize(980, 700)
 
@@ -307,7 +307,7 @@ class DNSGuardianApp:
 
         ver_badge = ctk.CTkLabel(
             brand_row,
-            text="v2.5",
+            text="v3.0",
             font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"),
             fg_color="#0284c7",
             text_color="#ffffff",
@@ -1052,10 +1052,10 @@ class DNSGuardianApp:
             text_color="#f8fafc",
             justify="left"
         ).pack(side="left", padx=16, pady=12)
-        cur_interval = str(self.config.get("check_interval_seconds", 6))
+        cur_interval = str(self.config.get("check_interval_seconds", 8))
         self.opt_interval = ctk.CTkOptionMenu(
             f2,
-            values=["3", "6", "10", "15", "30"],
+            values=["3", "6", "8", "10", "15", "30"],
             command=lambda v: self.save_settings_from_ui(),
             fg_color="#1e293b",
             button_color="#334155"
@@ -1076,7 +1076,7 @@ class DNSGuardianApp:
         cur_threshold = str(self.config.get("fail_threshold", 2))
         self.opt_threshold = ctk.CTkOptionMenu(
             f3,
-            values=["1", "2", "3", "5"],
+            values=["2", "3", "5"],
             command=lambda v: self.save_settings_from_ui(),
             fg_color="#1e293b",
             button_color="#334155"

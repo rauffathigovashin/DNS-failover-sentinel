@@ -9,41 +9,31 @@ RUN_REG_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
 APP_REG_NAME = "DNSShieldPro"
 
 DEFAULT_DNS_POOL: List[Dict] = [
-    # --- Ultra Fast Public DNS ---
     {
-        "id": "cf_main",
-        "name": "Cloudflare Primary",
-        "primary": "1.1.1.1",
-        "secondary": "1.0.0.1",
+        "id": "gcore",
+        "name": "GCore Public DNS",
+        "primary": "95.85.95.85",
+        "secondary": "2.56.220.2",
         "category": "Ultra Fast",
-        "desc": "Global lowest latency anycast network, uncensored and highly reliable.",
+        "desc": "Global high-throughput edge network with ultra-low latency.",
         "is_custom": False
     },
     {
-        "id": "cf_alt",
-        "name": "Cloudflare Alt (Bypass)",
-        "primary": "1.0.0.1",
-        "secondary": "1.1.1.1",
-        "category": "Ultra Fast",
-        "desc": "Alternative Cloudflare endpoint. Highly resilient when 1.1.1.1 is throttled.",
-        "is_custom": False
-    },
-    {
-        "id": "google",
+        "id": "google_alt",
         "name": "Google Public DNS",
-        "primary": "8.8.8.8",
-        "secondary": "8.8.4.4",
+        "primary": "8.8.4.4",
+        "secondary": "8.8.8.8",
         "category": "Ultra Fast",
-        "desc": "Worldwide distributed Google infrastructure with exceptional uptime.",
+        "desc": "Worldwide distributed Google infrastructure with resilient routing.",
         "is_custom": False
     },
     {
-        "id": "opendns_home",
-        "name": "OpenDNS Standard (Cisco)",
-        "primary": "208.67.222.222",
-        "secondary": "208.67.220.220",
+        "id": "quad9_sec",
+        "name": "Quad9 Protected",
+        "primary": "9.9.9.9",
+        "secondary": "149.112.112.112",
         "category": "Ultra Fast",
-        "desc": "Enterprise-grade Cisco Anycast DNS with smart routing and high reliability.",
+        "desc": "Global Anycast with threat blocking. Highly resilient, zero throttling.",
         "is_custom": False
     },
     {
@@ -56,21 +46,30 @@ DEFAULT_DNS_POOL: List[Dict] = [
         "is_custom": False
     },
     {
-        "id": "level3",
-        "name": "Level3 / CenturyLink",
-        "primary": "4.2.2.1",
-        "secondary": "4.2.2.2",
+        "id": "opendns_home",
+        "name": "OpenDNS Standard (Cisco)",
+        "primary": "208.67.222.222",
+        "secondary": "208.67.220.220",
         "category": "Ultra Fast",
-        "desc": "Direct Tier-1 internet backbone provider infrastructure.",
+        "desc": "Enterprise-grade Cisco Anycast DNS with smart routing and high reliability.",
         "is_custom": False
     },
     {
-        "id": "gcore",
-        "name": "GCore Public DNS",
-        "primary": "95.85.95.85",
-        "secondary": "2.56.220.2",
+        "id": "cf_alt",
+        "name": "Cloudflare Alt (Bypass)",
+        "primary": "1.0.0.1",
+        "secondary": "1.0.0.2",
         "category": "Ultra Fast",
-        "desc": "Global high-throughput edge network with ultra-low latency.",
+        "desc": "Alternative Cloudflare endpoint with zero throttling.",
+        "is_custom": False
+    },
+    {
+        "id": "cf_main",
+        "name": "Cloudflare Primary",
+        "primary": "1.0.0.1",
+        "secondary": "1.1.1.1",
+        "category": "Ultra Fast",
+        "desc": "Global lowest latency Anycast. Note: 1.1.1.1 port 53 is filtered by some ISPs.",
         "is_custom": False
     },
     {
@@ -82,15 +81,13 @@ DEFAULT_DNS_POOL: List[Dict] = [
         "desc": "Extremely stable public DNS with vast worldwide routing.",
         "is_custom": False
     },
-
-    # --- Security & Malware Protection ---
     {
-        "id": "quad9_sec",
-        "name": "Quad9 Protected",
-        "primary": "9.9.9.9",
-        "secondary": "149.112.112.112",
-        "category": "Security",
-        "desc": "Real-time threat intelligence blocking malware, phishing, and botnets.",
+        "id": "level3",
+        "name": "Level3 / CenturyLink",
+        "primary": "4.2.2.1",
+        "secondary": "4.2.2.2",
+        "category": "Ultra Fast",
+        "desc": "Direct Tier-1 internet backbone provider infrastructure.",
         "is_custom": False
     },
     {
@@ -129,8 +126,6 @@ DEFAULT_DNS_POOL: List[Dict] = [
         "desc": "Blocks known malware, scam pages, and phishing domains.",
         "is_custom": False
     },
-
-    # --- Ad-Blocking & Tracker Protection ---
     {
         "id": "adguard_default",
         "name": "AdGuard Default Ad-Block",
@@ -147,26 +142,6 @@ DEFAULT_DNS_POOL: List[Dict] = [
         "secondary": "76.76.10.2",
         "category": "Ad-Blocking",
         "desc": "Aggressive ad and telemetry domain filtering for faster browsing.",
-        "is_custom": False
-    },
-    {
-        "id": "mullvad_adblock",
-        "name": "Mullvad Ad-Block DNS",
-        "primary": "194.242.2.3",
-        "secondary": "193.198.108.3",
-        "category": "Ad-Blocking",
-        "desc": "Mullvad privacy infrastructure filtering ads and telemetry.",
-        "is_custom": False
-    },
-
-    # --- Privacy & No-Log DNS ---
-    {
-        "id": "mullvad_privacy",
-        "name": "Mullvad Privacy (No Log)",
-        "primary": "194.242.2.2",
-        "secondary": "193.198.108.2",
-        "category": "Privacy",
-        "desc": "Strict zero-logging policy based in Sweden. Uncensored and private.",
         "is_custom": False
     },
     {
@@ -196,8 +171,6 @@ DEFAULT_DNS_POOL: List[Dict] = [
         "desc": "Standard resolution with zero logs, censorship, or ad filtering.",
         "is_custom": False
     },
-
-    # --- Family & Parental Control ---
     {
         "id": "cf_family",
         "name": "Cloudflare Family Safe",
@@ -308,11 +281,12 @@ TRANSLATIONS = {
 
 DEFAULT_CONFIG = {
     "app_name": "DNS Shield Pro",
-    "version": "2.5",
+    "version": "3.0",
     "language": "en",
-    "check_interval_seconds": 6,
+    "check_interval_seconds": 8,
     "fail_threshold": 2,
-    "query_timeout_seconds": 1.5,
+    "query_timeout_seconds": 2.0,
+    "failover_cooldown_seconds": 30,
     "auto_switch_enabled": True,
     "selected_adapter": "Auto",
     "start_minimized": False,

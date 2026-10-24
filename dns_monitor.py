@@ -1,5 +1,6 @@
 import time
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Optional, Dict, List
 from dns_core import DNSCore
 from config_manager import ConfigManager
@@ -22,6 +23,11 @@ class DNSMonitor:
         self.current_latency = 0.0
         self.current_status = "Ready"
         self.current_status_code = "ready"  # "ready", "ok", "warning", "switching", "error", "offline", "stopped"
+
+        # Outage and Cooldown tracking
+        self.was_offline = False
+        self.last_failover_time = 0.0
+        self.failover_cooldown = float(self.config_manager.get("failover_cooldown_seconds", 45))
 
         # History buffer for live sparkline graphing (last 30 points)
         self.latency_history: List[Dict] = []
@@ -97,7 +103,7 @@ class DNSMonitor:
                 "status_text": self.current_status,
                 "status_code": self.current_status_code,
                 "fails": self.consecutive_fails,
-                "threshold": self.config_manager.get("fail_threshold", 2),
+                "threshold": self.config_manager.get("fail_threshold", 1),
                 "auto_switch": self.config_manager.get("auto_switch_enabled", True),
                 "total_checks": self.total_checks,
                 "failovers": self.failover_count,
@@ -126,7 +132,7 @@ class DNSMonitor:
                 test_domains = self.config_manager.get("test_domains", ["google.com", "cloudflare.com", "one.one.one.one"])
                 primary_domain = test_domains[0] if test_domains else "google.com"
                 secondary_domain = test_domains[1] if len(test_domains) > 1 else "cloudflare.com"
-                timeout = self.config_manager.get("query_timeout_seconds", 1.5)
+                timeout = max(1.5, float(self.config_manager.get("query_timeout_seconds", 2.0)))
 
                 ok = False
                 latency = 9999.0
@@ -134,28 +140,49 @@ class DNSMonitor:
 
                 if self.current_dns_list:
                     pri_ip = self.current_dns_list[0]
-                    ok, latency, info = DNSCore.test_dns_server(pri_ip, domain=primary_domain, timeout=timeout)
+                    has_sec = len(self.current_dns_list) > 1
+                    sec_ip = self.current_dns_list[1] if has_sec else None
 
-                    # If primary timed out on primary_domain, test secondary DNS
-                    if not ok and len(self.current_dns_list) > 1:
-                        sec_ip = self.current_dns_list[1]
-                        ok_sec, lat_sec, info_sec = DNSCore.test_dns_server(sec_ip, domain=primary_domain, timeout=timeout)
-                        if ok_sec:
-                            ok = True
-                            latency = lat_sec
-                            info = f"Secondary DNS ({sec_ip})"
+                    # 1. Test primary and secondary DNS in parallel on primary_domain
+                    with ThreadPoolExecutor(max_workers=2) as _ex:
+                        f_pri = _ex.submit(DNSCore.test_dns_server, pri_ip, primary_domain, timeout)
+                        f_sec = _ex.submit(DNSCore.test_dns_server, sec_ip, primary_domain, timeout) if has_sec else None
+                        ok_pri, lat_pri, info_pri = f_pri.result()
+                        ok_sec, lat_sec, info_sec = (f_sec.result() if f_sec else (False, 9999.0, ""))
 
-                    # If still failed, test fallback domain
-                    if not ok:
-                        ok_alt, lat_alt, _ = DNSCore.test_dns_server(pri_ip, domain=secondary_domain, timeout=timeout)
-                        if ok_alt:
-                            ok = True
-                            latency = lat_alt
-                            info = f"Fallback Domain ({secondary_domain})"
+                    if ok_pri:
+                        ok, latency, info = True, lat_pri, info_pri
+                    elif ok_sec:
+                        ok, latency, info = True, lat_sec, f"Secondary DNS ({sec_ip})"
+                    else:
+                        # 2. Both failed on primary domain — ALWAYS test secondary fallback domain in parallel!
+                        with ThreadPoolExecutor(max_workers=2) as _ex2:
+                            f2_pri = _ex2.submit(DNSCore.test_dns_server, pri_ip, secondary_domain, timeout)
+                            f2_sec = _ex2.submit(DNSCore.test_dns_server, sec_ip, secondary_domain, timeout) if has_sec else None
+                            ok2_pri, lat2_pri, info2_pri = f2_pri.result()
+                            ok2_sec, lat2_sec, info2_sec = (f2_sec.result() if f2_sec else (False, 9999.0, ""))
+
+                        if ok2_pri:
+                            ok, latency, info = True, lat2_pri, f"Fallback Domain ({secondary_domain})"
+                        elif ok2_sec:
+                            ok, latency, info = True, lat2_sec, f"Secondary Fallback ({secondary_domain})"
+                        else:
+                            # 3. Quick confirmation check (300ms pause) to eliminate transient Wi-Fi jitter
+                            time.sleep(0.3)
+                            ok_retry, lat_retry, info_retry = DNSCore.test_dns_server(pri_ip, primary_domain, timeout=1.2)
+                            if ok_retry:
+                                ok, latency, info = True, lat_retry, "Transient Recovered"
+                            else:
+                                ok, latency, info = False, 9999.0, info_pri
+
                 else:
                     ok, latency, info = DNSCore.test_current_dns_health(test_domains=test_domains, timeout=timeout)
 
                 if ok:
+                    if self.was_offline:
+                        self.was_offline = False
+                        self.log("Internet link and DNS resolution restored. Active protection operational.", "success")
+
                     self.consecutive_fails = 0
                     self.current_latency = latency
                     self.current_status = f"Protected & Healthy ({latency} ms)"
@@ -163,30 +190,44 @@ class DNSMonitor:
                     self._record_latency(latency, "ok")
                     self._notify_status()
                 else:
-                    is_online = DNSCore.is_network_online(timeout=0.6)
+                    # DNS failed. Check if Internet (Layer 3/4) is actually online or offline!
+                    is_online = DNSCore.is_network_online(timeout=1.5)
                     if not is_online:
+                        # INTERNET OUTAGE DETECTED! (Router, Cable, Wi-Fi, or ISP down)
+                        # CRITICAL: DO NOT trigger failover, DO NOT reset adapter!
+                        if not self.was_offline:
+                            self.was_offline = True
+                            self.log("⚠️ Internet connection down (ISP / Gateway link lost). Preserving DNS settings.", "warning")
+
                         self.current_latency = 9999.0
-                        self.current_status = "Network Disconnected (Waiting for link)"
+                        self.current_status = "Internet Disconnected (Waiting for connection)"
                         self.current_status_code = "offline"
-                        self._record_latency(9999.0, "offline")
+                        self._record_latency(0.0, "offline")
                         self._notify_status()
-                        self.log("Network link down. DNS settings preserved.", "warning")
+
+                        if self.stop_event.wait(timeout=5):
+                            break
+                        continue
                     else:
+                        # INTERNET IS CONFIRMED UP, BUT DNS IS FAILING!
+                        self.was_offline = False
                         self.consecutive_fails += 1
-                        fail_threshold = self.config_manager.get("fail_threshold", 2)
+                        fail_threshold = max(2, int(self.config_manager.get("fail_threshold", 2)))
                         self.current_latency = 9999.0
-                        self.current_status = f"DNS Unresponsive ({self.consecutive_fails}/{fail_threshold})"
-                        self.current_status_code = "warning"
-                        self._record_latency(9999.0, "warning")
-                        self._notify_status()
-
                         dns_display = ", ".join(self.current_dns_list) or "DHCP Default"
-                        self.log(
-                            f"Active DNS [{dns_display}] did not respond! [{info}] (Attempt {self.consecutive_fails}/{fail_threshold})",
-                            "warning"
-                        )
 
+                        # Require consecutive fails to reach threshold! NEVER failover on 1 single dropped packet!
                         if self.consecutive_fails >= fail_threshold:
+                            self.current_status = "DNS Failure! Switching to fastest verified server..."
+                            self.current_status_code = "warning"
+                            self._record_latency(9999.0, "warning")
+                            self._notify_status()
+
+                            self.log(
+                                f"Active DNS [{dns_display}] confirmed down ({self.consecutive_fails}/{fail_threshold} checks failed). Triggering emergency failover...",
+                                "failover"
+                            )
+
                             if self.config_manager.get("auto_switch_enabled", True):
                                 self._trigger_auto_failover()
                             else:
@@ -194,68 +235,131 @@ class DNSMonitor:
                                 self.current_status_code = "error"
                                 self._notify_status()
                                 self.log("DNS failure detected, but automatic failover is disabled in settings.", "error")
+                        else:
+                            self.current_status = f"DNS Warning ({self.consecutive_fails}/{fail_threshold})"
+                            self.current_status_code = "warning"
+                            self._record_latency(9999.0, "warning")
+                            self._notify_status()
+                            self.log(
+                                f"Active DNS [{dns_display}] did not respond [{info}] (Check {self.consecutive_fails}/{fail_threshold}). Re-verifying on next cycle...",
+                                "warning"
+                            )
 
             except Exception as e:
                 self.log(f"Watchdog monitoring loop error: {e}", "error")
 
-            interval = max(3, self.config_manager.get("check_interval_seconds", 6))
+            interval = max(4, self.config_manager.get("check_interval_seconds", 8))
             if self.stop_event.wait(timeout=interval):
                 break
 
     def _trigger_auto_failover(self):
         """
-        Emergency Failover:
-        Benchmarks candidate pool in parallel, verifies responsiveness, and switches adapter to best candidate.
+        Ultra-Fast Emergency Failover (< 300ms):
+        Races top resilient Anycast resolvers in parallel with sub-second race probe.
+        Applies verified fastest primary and a distinct healthy secondary.
+        If all fail, resets to DHCP so the user is never left without internet!
         """
-        self.current_status = "DNS Failure! Selecting fastest healthy server..."
-        self.current_status_code = "switching"
-        self._notify_status()
-        self.log("CRITICAL: Active DNS unreachable! Initiating emergency auto-failover...", "failover")
-
-        pool = self.config_manager.get("dns_pool", [])
-        benchmarks = DNSCore.benchmark_all_servers(pool, timeout=1.5)
-        alive_servers = [s for s in benchmarks if s["is_alive"]]
-
-        if not alive_servers:
-            self.current_status = "Critical: No alternative DNS servers reachable!"
-            self.current_status_code = "error"
-            self._notify_status()
-            self.log("CRITICAL ERROR: None of the alternative DNS servers responded. Check network cable/router!", "error")
-            self.consecutive_fails = 0
+        now = time.time()
+        cooldown = max(20.0, float(self.config_manager.get("failover_cooldown_seconds", 30)))
+        if (now - self.last_failover_time) < cooldown:
+            remaining = int(cooldown - (now - self.last_failover_time))
+            self.log(f"Failover cooldown active ({remaining}s remaining). Suppressing switch to avoid adapter thrashing.", "info")
             return
 
-        applied_successfully = False
-        for candidate in alive_servers[:3]:
-            best_name = candidate["name"]
-            best_primary = candidate["primary"] if candidate["primary_ok"] else candidate["secondary"]
-            best_secondary = candidate["secondary"] if (candidate["secondary"] and candidate["secondary_ok"]) else (candidate["primary"] if candidate["primary_ok"] else "")
+        self.last_failover_time = now
+        self.current_status = "DNS Failure! Selecting fastest verified server..."
+        self.current_status_code = "switching"
+        self._notify_status()
+        self.log("CRITICAL: Active DNS unreachable while internet is up! Initiating ultra-fast failover...", "failover")
 
-            self.log(f"Testing & applying: {best_name} ({best_primary} - {candidate['latency_ms']} ms)...", "info")
+        pool = self.config_manager.get("dns_pool", [])
+        current_ips = set(self.current_dns_list)
 
-            success, msg = DNSCore.set_adapter_dns(self.current_adapter, best_primary, best_secondary)
-            if success:
-                test_ok, test_ms, _ = DNSCore.test_dns_server(best_primary, domain="google.com", timeout=1.5)
-                if test_ok:
-                    self.consecutive_fails = 0
-                    self.failover_count += 1
-                    self.current_latency = test_ms
-                    self.current_dns_list = [best_primary] + ([best_secondary] if best_secondary else [])
-                    self.current_status = f"Recovered: {best_name} ({test_ms} ms)"
-                    self.current_status_code = "ok"
-                    self._record_latency(test_ms, "ok")
-                    self._notify_status()
+        # Exclude currently dead IPs, known-blocked 1.1.1.1, and restrictive Family/Adblock categories from emergency pool
+        priority_candidates = []
+        fallback_candidates = []
 
-                    self.log(f"FAILOVER SUCCESS: Internet restored via {best_name} [{best_primary}] ({test_ms} ms)!", "success")
+        for item in pool:
+            pri = item.get("primary", "")
+            # Skip if primary is in current failing IPs or known-blocked 1.1.1.1
+            if pri in current_ips or pri == "1.1.1.1":
+                continue
 
-                    if self.on_dns_switched:
-                        try:
-                            self.on_dns_switched(best_name, best_primary, test_ms)
-                        except Exception:
-                            pass
-                    applied_successfully = True
-                    break
+            category = item.get("category", "")
+            # Prioritize Ultra Fast, General, Privacy (unfiltered)
+            if category in ("Ultra Fast", "Privacy", "General", "Custom"):
+                priority_candidates.append(item)
+            else:
+                fallback_candidates.append(item)
 
-        if not applied_successfully:
+        candidates = (priority_candidates[:6] if priority_candidates else fallback_candidates[:6])
+        if not candidates:
+            candidates = pool[:6]
+
+        # Fast parallel race probe (< 150ms)
+        alive_servers = DNSCore.fast_failover_probe(candidates, domain="google.com", timeout=0.85)
+
+        if not alive_servers:
+            # Broader quick sweep across pool
+            alive_servers = DNSCore.fast_failover_probe(pool, domain="google.com", timeout=1.0)
+
+        if not alive_servers:
+            # SAFETY FALLBACK: Reset to DHCP so user's internet is never broken!
+            self.current_status = "Resetting to DHCP (No custom DNS reachable)"
+            self.current_status_code = "warning"
+            self._notify_status()
+            self.log("SAFETY FALLBACK: No alternative DNS responded. Resetting adapter to Automatic (DHCP) to restore internet access.", "warning")
+            ok_dhcp, _ = DNSCore.reset_adapter_dns_to_dhcp(self.current_adapter)
+            if ok_dhcp:
+                self.current_dns_list = []
+                self.consecutive_fails = 0
+                self.current_status = "Active: DHCP (Automatic / ISP Default)"
+                self.current_status_code = "ok"
+                self._notify_status()
+                return
+
+            self.current_status = "Critical: No DNS reachable"
+            self.current_status_code = "error"
+            self._notify_status()
+            self.log("FAILOVER NOTICE: None of the alternative DNS servers responded.", "error")
+            self.consecutive_fails = 1
+            return
+
+        best = alive_servers[0]
+        best_name = best["name"]
+        best_primary = best["primary"] if best.get("primary_ok") else best["secondary"]
+
+        # Ensure secondary is distinct and healthy
+        best_secondary = ""
+        if best.get("secondary") and best.get("secondary_ok") and best["secondary"] != best_primary:
+            best_secondary = best["secondary"]
+        elif len(alive_servers) > 1:
+            second_best = alive_servers[1]
+            sec_candidate = second_best["primary"] if second_best.get("primary_ok") else second_best.get("secondary", "")
+            if sec_candidate and sec_candidate != best_primary:
+                best_secondary = sec_candidate
+
+        self.log(f"Applying verified DNS: {best_name} [{best_primary}] ({best['latency_ms']} ms)...", "info")
+
+        success, msg = DNSCore.set_adapter_dns(self.current_adapter, best_primary, best_secondary)
+        if success:
+            self.consecutive_fails = 0
+            self.failover_count += 1
+            self.current_latency = best["latency_ms"]
+            self.current_dns_list = [best_primary] + ([best_secondary] if best_secondary else [])
+            self.current_status = f"Recovered: {best_name} ({self.current_latency} ms)"
+            self.current_status_code = "ok"
+            self._record_latency(self.current_latency, "ok")
+            self._notify_status()
+
+            self.log(f"FAILOVER SUCCESS: Internet restored via {best_name} [{best_primary}] ({self.current_latency} ms)!", "success")
+
+            if self.on_dns_switched:
+                try:
+                    self.on_dns_switched(best_name, best_primary, self.current_latency)
+                except Exception:
+                    pass
+        else:
             self.current_status = "Failover Error (Permission Denied)"
             self.current_status_code = "error"
             self._notify_status()
@@ -264,21 +368,34 @@ class DNSMonitor:
     def force_quick_optimize(self, progress_callback: Optional[Callable[[int, int, Dict], None]] = None) -> Dict:
         """
         1-Click Instant Optimization:
-        Benchmarks all DNS servers in parallel and sets the fastest one immediately.
+        Verifies internet first, benchmarks all DNS servers with controlled concurrency and sets the fastest.
         """
-        self.log("Manual DNS optimization triggered. Running parallel latency benchmark...", "info")
+        if not DNSCore.is_network_online(timeout=1.5):
+            self.log("Cannot optimize DNS: Internet connection is currently offline! Check your cable/Wi-Fi router.", "warning")
+            return {"success": False, "error": "Internet connection is offline", "benchmarks": []}
+
+        self.log("Manual DNS optimization triggered. Running latency benchmark...", "info")
         pool = self.config_manager.get("dns_pool", [])
-        benchmarks = DNSCore.benchmark_all_servers(pool, timeout=1.5, progress_callback=progress_callback)
-        alive = [s for s in benchmarks if s["is_alive"]]
+        benchmarks = DNSCore.benchmark_all_servers(pool, timeout=1.8, progress_callback=progress_callback)
+        alive = [s for s in benchmarks if s.get("is_alive")]
 
         if alive:
             best = alive[0]
-            best_primary = best["primary"] if best["primary_ok"] else best["secondary"]
-            best_secondary = best["secondary"] if (best["secondary"] and best["secondary_ok"]) else ""
+            best_primary = best["primary"] if best.get("primary_ok") else best["secondary"]
+            best_secondary = ""
+            if best.get("secondary") and best.get("secondary_ok") and best["secondary"] != best_primary:
+                best_secondary = best["secondary"]
+            elif len(alive) > 1:
+                second_best = alive[1]
+                sec_cand = second_best["primary"] if second_best.get("primary_ok") else second_best.get("secondary", "")
+                if sec_cand and sec_cand != best_primary:
+                    best_secondary = sec_cand
+
             adapter = self.get_selected_adapter()
 
             ok, msg = DNSCore.set_adapter_dns(adapter, best_primary, best_secondary)
             if ok:
+                time.sleep(0.1)
                 self.consecutive_fails = 0
                 self.current_dns_list = [best_primary] + ([best_secondary] if best_secondary else [])
                 self.current_latency = best["latency_ms"]

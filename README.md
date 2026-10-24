@@ -66,3 +66,19 @@ Run **`dist\DNS_Shield_Pro.exe`** directly without installing Python.
   pip install -r requirements.txt
   ```
   *(customtkinter, dnspython, pystray, pillow, psutil)*
+
+---
+
+## 📱 DNS Shield Mobile (Android Version)
+
+DNS Shield Pro is also available for Android smartphones to eliminate mobile ISP port 53 throttling and DNS outages!
+
+- **Ready-to-Install APK:** Located at `DNS_Shield_Mobile.apk` (or `android\DNS_Shield_Mobile.apk`).
+- **Features:**
+  - Android `VpnService` zero-root DNS-only split-tunneling (0% speed impact on normal web traffic).
+  - RFC 8484 DNS-over-HTTPS (DoH) engine bypassing UDP port 53 blocks.
+  - Zero-Downtime auto-failover with real-time latency telemetry.
+  - 1-Click Speed Benchmark across 16+ global Anycast DNS servers.
+  - 15-second zero-install Private DNS guide for instant phone relief.
+- **Source & Docs:** See [android/README_MOBILE.md](file:///d:/DNS%20F%C4%B0X/android/README_MOBILE.md) for full details.
+
